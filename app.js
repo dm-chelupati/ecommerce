@@ -5,42 +5,67 @@ const { DefaultAzureCredential } = require('@azure/identity');
 const app = express();
 app.use(express.json());
 
-// Use managed identity — no keys needed
+// Use managed identity — no keys needed (works over both public and private endpoints)
 const credential = new DefaultAzureCredential();
+const cosmosEndpoint = process.env.COSMOS_ENDPOINT;
+if (!cosmosEndpoint) {
+  console.error('FATAL: COSMOS_ENDPOINT environment variable is not set');
+  process.exit(1);
+}
 const client = new CosmosClient({
-  endpoint: process.env.COSMOS_ENDPOINT,
+  endpoint: cosmosEndpoint,
   aadCredentials: credential,
 });
 const dbName = process.env.COSMOS_DB_NAME || 'ecommerce';
 
 let productsContainer, ordersContainer;
 
-async function initDb() {
-  try {
-    const { database } = await client.databases.createIfNotExists({ id: dbName });
-    const { container: pc } = await database.containers.createIfNotExists({ id: 'products', partitionKey: '/category' });
-    const { container: oc } = await database.containers.createIfNotExists({ id: 'orders', partitionKey: '/status' });
-    productsContainer = pc;
-    ordersContainer = oc;
+const MAX_RETRIES = 5;
+const RETRY_DELAY_MS = 3000;
 
-    // Seed products if empty
-    const { resources } = await pc.items.readAll().fetchAll();
-    if (resources.length === 0) {
-      const products = [
-        { id: '1', name: 'ERP Core License', category: 'Software', price: 15000, stock: 50 },
-        { id: '2', name: 'HANA DB Instance', category: 'Infrastructure', price: 8500, stock: 20 },
-        { id: '3', name: 'Frontend Server', category: 'Software', price: 3200, stock: 100 },
-        { id: '4', name: 'Integration Suite', category: 'Middleware', price: 5600, stock: 35 },
-        { id: '5', name: 'Analytics Cloud Seat', category: 'Analytics', price: 1200, stock: 200 },
-        { id: '6', name: 'Business Network License', category: 'Network', price: 2800, stock: 75 },
-        { id: '7', name: 'HCM Module', category: 'HR', price: 4500, stock: 60 },
-        { id: '8', name: 'Procurement Module', category: 'Procurement', price: 3800, stock: 45 },
-      ];
-      for (const p of products) await pc.items.create(p);
+async function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function initDb() {
+  for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+    try {
+      console.log(`Connecting to Cosmos DB at ${cosmosEndpoint} (attempt ${attempt}/${MAX_RETRIES})...`);
+      const { database } = await client.databases.createIfNotExists({ id: dbName });
+      const { container: pc } = await database.containers.createIfNotExists({ id: 'products', partitionKey: '/category' });
+      const { container: oc } = await database.containers.createIfNotExists({ id: 'orders', partitionKey: '/status' });
+      productsContainer = pc;
+      ordersContainer = oc;
+
+      // Seed products if empty
+      const { resources } = await pc.items.readAll().fetchAll();
+      if (resources.length === 0) {
+        const products = [
+          { id: '1', name: 'ERP Core License', category: 'Software', price: 15000, stock: 50 },
+          { id: '2', name: 'HANA DB Instance', category: 'Infrastructure', price: 8500, stock: 20 },
+          { id: '3', name: 'Frontend Server', category: 'Software', price: 3200, stock: 100 },
+          { id: '4', name: 'Integration Suite', category: 'Middleware', price: 5600, stock: 35 },
+          { id: '5', name: 'Analytics Cloud Seat', category: 'Analytics', price: 1200, stock: 200 },
+          { id: '6', name: 'Business Network License', category: 'Network', price: 2800, stock: 75 },
+          { id: '7', name: 'HCM Module', category: 'HR', price: 4500, stock: 60 },
+          { id: '8', name: 'Procurement Module', category: 'Procurement', price: 3800, stock: 45 },
+        ];
+        for (const p of products) await pc.items.create(p);
+      }
+      console.log('Cosmos DB initialized (private endpoint connectivity confirmed)');
+      return;
+    } catch (err) {
+      console.error(`DB init attempt ${attempt} failed: ${err.message}`);
+      if (err.message.includes('public internet') || err.message.includes('firewall')) {
+        console.error('HINT: Ensure private endpoint DNS resolves correctly. Run: nslookup ' + cosmosEndpoint.replace('https://', '').replace(':443/', ''));
+      }
+      if (attempt < MAX_RETRIES) {
+        console.log(`Retrying in ${RETRY_DELAY_MS / 1000}s...`);
+        await sleep(RETRY_DELAY_MS);
+      } else {
+        console.error('All DB init retries exhausted. App will start without DB.');
+      }
     }
-    console.log('Cosmos DB initialized');
-  } catch (err) {
-    console.error('DB init error:', err.message);
   }
 }
 
