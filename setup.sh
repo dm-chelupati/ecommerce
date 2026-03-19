@@ -1,60 +1,45 @@
 #!/bin/bash
-# Setup script for SAP Commerce app on VM
-# Installs Node.js + PostgreSQL + the web app
+# Setup script for E-Commerce app on VM
+# Installs Node.js and the web app — connects to Azure SQL
 
 set -e
 
-echo "=== Installing PostgreSQL ==="
-apt-get update -qq
-apt-get install -y postgresql postgresql-contrib
-
-# Start PostgreSQL and create app database/user
-systemctl enable postgresql
-systemctl start postgresql
-
-sudo -u postgres psql -c "CREATE USER sapapp WITH PASSWORD 'sapapp123';" 2>/dev/null || true
-sudo -u postgres psql -c "CREATE DATABASE sapcommerce OWNER sapapp;" 2>/dev/null || true
-sudo -u postgres psql -c "GRANT ALL PRIVILEGES ON DATABASE sapcommerce TO sapapp;" 2>/dev/null || true
+DB_HOST="${1}"
+DB_PASSWORD="${2}"
+DB_USER="${3:-sqladmin}"
+DB_NAME="${4:-ecommerce}"
 
 echo "=== Installing Node.js 20 ==="
-curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
-apt-get install -y nodejs
-
-echo "=== Setting up app directory ==="
-mkdir -p /opt/sapcommerce
-cd /opt/sapcommerce
-
-# Copy app files (passed via custom script extension fileUris)
-cp /var/lib/waagent/custom-script/download/0/app.js . 2>/dev/null || true
-cp /var/lib/waagent/custom-script/download/0/package.json . 2>/dev/null || true
-
-# If files weren't copied, create inline
-if [ ! -f package.json ]; then
-  cat > package.json << 'PKGEOF'
-{"name":"sap-commerce-api","version":"1.0.0","main":"app.js","dependencies":{"express":"^4.18.2","pg":"^8.11.3"}}
-PKGEOF
+if ! command -v node &>/dev/null; then
+  curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
+  apt-get install -y nodejs
 fi
 
+echo "=== Setting up app directory ==="
+mkdir -p /opt/ecommerce
+cd /opt/ecommerce
+
 echo "=== Installing dependencies ==="
-npm install --production
+cat > package.json << 'PKGEOF'
+{"name":"ecommerce-api","version":"1.0.0","dependencies":{"express":"^4.18.2","mssql":"^10.0.2"}}
+PKGEOF
+npm install --production 2>/dev/null
 
 echo "=== Creating systemd service ==="
-cat > /etc/systemd/system/sapcommerce.service << EOF
+cat > /etc/systemd/system/ecommerce.service << EOF
 [Unit]
-Description=SAP Commerce API
-After=network.target postgresql.service
-Requires=postgresql.service
+Description=E-Commerce API
+After=network.target
 
 [Service]
 Type=simple
 User=root
-WorkingDirectory=/opt/sapcommerce
+WorkingDirectory=/opt/ecommerce
 Environment=PORT=80
-Environment=DB_HOST=localhost
-Environment=DB_PORT=5432
-Environment=DB_NAME=sapcommerce
-Environment=DB_USER=sapapp
-Environment=DB_PASSWORD=sapapp123
+Environment=DB_HOST=${DB_HOST}
+Environment=DB_NAME=${DB_NAME}
+Environment=DB_USER=${DB_USER}
+Environment=DB_PASSWORD=${DB_PASSWORD}
 ExecStart=/usr/bin/node app.js
 Restart=always
 RestartSec=5
@@ -64,9 +49,9 @@ WantedBy=multi-user.target
 EOF
 
 systemctl daemon-reload
-systemctl enable sapcommerce
-systemctl start sapcommerce
+systemctl enable ecommerce
+systemctl restart ecommerce
 
-echo "=== SAP Commerce API started ==="
+echo "=== E-Commerce API started ==="
 echo "DB_HOST: ${DB_HOST}"
 echo "Listening on port 80"
