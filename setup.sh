@@ -1,13 +1,11 @@
 #!/bin/bash
 # Setup script for E-Commerce app on VM
-# Installs Node.js and the web app — connects to Azure SQL
+# Installs Node.js and the web app — connects to Cosmos DB via private endpoint
 
 set -e
 
-DB_HOST="${1}"
-DB_PASSWORD="${2}"
-DB_USER="${3:-sqladmin}"
-DB_NAME="${4:-ecommerce}"
+COSMOS_ENDPOINT="${1:?Usage: setup.sh <COSMOS_ENDPOINT> [COSMOS_DB_NAME]}"
+COSMOS_DB_NAME="${2:-ecommerce}"
 
 echo "=== Installing Node.js 20 ==="
 if ! command -v node &>/dev/null; then
@@ -21,7 +19,7 @@ cd /opt/ecommerce
 
 echo "=== Installing dependencies ==="
 cat > package.json << 'PKGEOF'
-{"name":"ecommerce-api","version":"1.0.0","dependencies":{"express":"^4.18.2","mssql":"^10.0.2"}}
+{"name":"ecommerce-api","version":"1.0.0","dependencies":{"express":"^4.18.2","@azure/cosmos":"^4.0.0","@azure/identity":"^4.0.0"}}
 PKGEOF
 npm install --production 2>/dev/null
 
@@ -36,10 +34,8 @@ Type=simple
 User=root
 WorkingDirectory=/opt/ecommerce
 Environment=PORT=80
-Environment=DB_HOST=${DB_HOST}
-Environment=DB_NAME=${DB_NAME}
-Environment=DB_USER=${DB_USER}
-Environment=DB_PASSWORD=${DB_PASSWORD}
+Environment=COSMOS_ENDPOINT=${COSMOS_ENDPOINT}
+Environment=COSMOS_DB_NAME=${COSMOS_DB_NAME}
 ExecStart=/usr/bin/node app.js
 Restart=always
 RestartSec=5
@@ -53,5 +49,5 @@ systemctl enable ecommerce
 systemctl restart ecommerce
 
 echo "=== E-Commerce API started ==="
-echo "DB_HOST: ${DB_HOST}"
+echo "COSMOS_ENDPOINT: ${COSMOS_ENDPOINT}"
 echo "Listening on port 80"
